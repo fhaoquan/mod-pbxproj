@@ -714,6 +714,10 @@ class XcodeProject(PBXDict):
             v.set_project(self)
 
 
+    def migrate_to_path(self, dst_path):
+        self.pbxproj_path = os.path.abspath(os.path.join(dst_path, "project.pbxproj"))
+        self.source_root = os.path.abspath(os.path.join(dst_path, ".."))
+
     def add_other_cflags(self, flags):
         build_configs = [b for b in self.objects.values() if b.get('isa') == 'XCBuildConfiguration']
 
@@ -886,6 +890,11 @@ class XcodeProject(PBXDict):
 
         return phases
 
+    def get_targets(self):
+        targets = [t for t in self.objects.values() if isinstance(t, PBXTarget)]
+
+        return targets
+    
     def get_target_by_name(self, name):
         targets = self.get_build_phases('PBXNativeTarget')
         target = None
@@ -909,6 +918,14 @@ class XcodeProject(PBXDict):
             exists_list = [f.get('name') for f in self.objects.values() if f.get('isa') == 'PBXFileReference' and f.get('name') in file_list]
 
         return set(file_list).difference(exists_list)
+
+    def get_target(self, target):
+        targets = [t for t in self.get_targets() if t.get('name') == target]
+
+        if len(targets) != 0:
+            return targets[0]
+
+        return None
 
     def add_run_script(self, target, script=None, insert_before_compile=False):
         result = []
