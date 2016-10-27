@@ -41,12 +41,30 @@ import re
 import shutil
 import subprocess
 import uuid
+import subprocess
+import glob
+import base64
+import OpenSSL
 
 from UserDict import IterableUserDict
 from UserList import UserList
 
 regex = '[a-zA-Z0-9\\._/-]*'
 
+def load_mobileprovision(provisionfile):
+    with open(os.devnull, 'w') as devnull:
+        plistcontent = subprocess.check_output("openssl smime -in \"%s\" -inform der -verify"%provisionfile, stderr=devnull, shell=True)
+        return plistlib.readPlistFromString(plistcontent)
+
+def get_mobileprovision(name):
+    for provisionfile in glob.glob(os.path.expanduser("~/Library/MobileDevice/Provisioning Profiles/*.mobileprovision")):
+        plist = load_mobileprovision(provisionfile)
+        if name == plist.get('Name'):
+            return plist
+
+def get_cert_cn(certBytes):
+    cert = OpenSSL.crypto.load_certificate(OpenSSL.crypto.FILETYPE_ASN1, certBytes)
+    return cert.get_subject().commonName
 
 class PBXEncoder(json.JSONEncoder):
     def default(self, obj):
@@ -404,6 +422,47 @@ class PBXNativeTarget(PBXTarget):
 
         return build_phase
 
+    def set_development_team(self, team, manual=False):
+        attrbutes = self.project.root_object.get("attributes")
+
+        if attrbutes == None:
+            attrbutes = PBXDict()
+            self.project['attributes'] = attrbutes
+        target_attributes = attrbutes.get('TargetAttributes')
+        if target_attributes == None:
+            target_attributes = PBXDict()
+            attrbutes['TargetAttributes'] = target_attributes
+        target_info = target_attributes.get(self.id)
+        if target_info == None:
+            target_info = PBXDict()
+            target_attributes[self.id] = target_info
+
+        target_info['DevelopmentTeam'] = team
+
+        if manual:
+            target_info['ProvisioningStyle'] = 'Manual'
+        elif 'ProvisioningStyle' in target_info:
+            target_info.pop('ProvisioningStyle')
+
+        for buildConfig in self.get_buildconfigs():
+            buildConfig.add_single_valued_flag('DEVELOPMENT_TEAM', team)
+
+    def set_provision(self, provision):
+        provisionPlist = get_mobileprovision(provision)
+
+        if provisionPlist == None:
+            print("Can't find matched mobileprovision: %s")
+        team = provisionPlist.get("TeamIdentifier")[0]
+        self.set_development_team(team, True)
+
+        certificate = get_cert_cn(provisionPlist['DeveloperCertificates'][0].data)
+
+        for buildConfig in self.get_buildconfigs():
+            buildConfig.add_single_valued_flag('PROVISIONING_PROFILE', provisionPlist.get('UUID'))
+            buildConfig.add_single_valued_flag('PROVISIONING_PROFILE_SPECIFIER', provisionPlist.get('Name'))
+            buildConfig.add_single_valued_flag('CODE_SIGN_IDENTITY[sdk=iphoneos*]', certificate)
+
+
     def embed_binary(self, f_path):
         results = []
 
@@ -412,11 +471,8 @@ class PBXNativeTarget(PBXTarget):
             print("%s not exists in project"%f_path)
             return
 
-        buildConfigurationList = self.project.objects.get(self['buildConfigurationList'])
-        buildConfigurations = [self.project.objects.get(guid) for guid in buildConfigurationList['buildConfigurations']]
-
-        for buildConfig in buildConfigurations:
-            buildConfig['buildSettings']['LD_RUNPATH_SEARCH_PATHS'] = "$(inherited) @executable_path/Frameworks"
+        for buildConfig in self.get_buildconfigs():
+            buildConfig.add_single_valued_flag('LD_RUNPATH_SEARCH_PATHS', "$(inherited) @executable_path/Frameworks")
 
         embed_buildphase = self.get_embed_buildphase()
         build_file = embed_buildphase.get_build_file(f_path)
@@ -968,7 +1024,7 @@ class XcodeProject(PBXDict):
 
         return result
 
-    def add_folder(self, os_path, parent=None, excludes=None, recursive=True, create_build_files=True):
+    def add_folder(self, os_path, parent=None, excludes=None, recursive=True, create_build_files=True, target=None):
         if not os.path.isdir(os_path):
             return []
 
@@ -1025,6 +1081,9 @@ class XcodeProject(PBXDict):
                     'parent': grp,
                     'name': f
                 }
+
+                if target:
+                    kwds['target'] = target
 
                 f_path = os.path.join(grp_path, f)
                 file_dict[f_path] = kwds
@@ -1223,6 +1282,7 @@ class XcodeProject(PBXDict):
             mod_dict[k.lower()] = v
 
         parent = mod_dict.pop('group', None)
+        target = mod_dict.pop('target', None)
 
         if parent:
             parent = self.get_or_create_group(parent)
@@ -1262,6 +1322,9 @@ class XcodeProject(PBXDict):
 
                     if parent:
                         kwds['parent'] = parent
+
+                    if target:
+                        kwds['target'] = target
 
                     if excludes:
                         kwds['excludes'] = excludes
@@ -1331,6 +1394,9 @@ class XcodeProject(PBXDict):
                         kwds['parent'] = self.get_or_create_group('Libraries', parent=parent)
                     elif k == 'frameworks':
                         kwds['parent'] = self.get_or_create_group('Frameworks', parent=parent)
+
+                    if target:
+                        kwds['target'] = target
 
                     if p:
                         kwds['name'] = file_name
