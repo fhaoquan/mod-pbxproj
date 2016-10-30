@@ -451,7 +451,9 @@ class PBXNativeTarget(PBXTarget):
         provisionPlist = get_mobileprovision(provision)
 
         if provisionPlist == None:
-            print("Can't find matched mobileprovision: %s")
+            print("Can't find matched mobileprovision: %s"%provision)
+            return False
+
         team = provisionPlist.get("TeamIdentifier")[0]
         self.set_development_team(team, True)
 
@@ -469,7 +471,7 @@ class PBXNativeTarget(PBXTarget):
         fileid = self.project.get_file_id_by_path(f_path)
         if not fileid:
             print("%s not exists in project"%f_path)
-            return
+            return False
 
         for buildConfig in self.get_buildconfigs():
             buildConfig.add_single_valued_flag('LD_RUNPATH_SEARCH_PATHS', "$(inherited) @executable_path/Frameworks")
